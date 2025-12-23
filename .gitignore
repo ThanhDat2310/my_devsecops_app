@@ -1,0 +1,14 @@
+# Ignore the binary directory of Terraform (That make error 700MB)
+**/.terraform/
+
+# Skip the file status (That included the sensitive information)
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+#skip secret file 
+*.pem
+
+#skip pycache of python
+__pycache__/
+*.pyc

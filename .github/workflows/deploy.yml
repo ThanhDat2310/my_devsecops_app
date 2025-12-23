@@ -1,60 +1,70 @@
-name: DevSecOps Pipeline
+name: CI/CD DevSecOps Pipeline
 
-on:
-  push:
-    branches: [ "main" ]
+on: [push]
 
 jobs:
-  build-secure-deploy:
+  # --- GIAI ĐOẠN 3: BUILD & SECURITY SCAN ---
+  build-and-scan:
     runs-on: ubuntu-latest
-
     steps:
-    # 1. Lấy code về
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-    # 2. Đăng nhập Docker Hub
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      # 1. Secret Scanning (TruffleHog)
+      - name: Trufflehog Actions Scan
+        uses: edplato/trufflehog-actions-scan@master
+        
+      # 2. Dependency Scanning (Snyk)
+      - name: Snyk Monitor
+        uses: snyk/actions/python@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
 
-    # 3. Quét bảo mật dependencies bằng Snyk (Bước Sec)
-    # Nếu phát hiện lỗi bảo mật cao (High), pipeline sẽ dừng lại ngay
-    - name: Run Snyk to check for vulnerabilities
-      uses: snyk/actions/python@master
-      continue-on-error: true # Để true cho demo chạy mượt, thực tế nên để false để chặn lỗi
-      env:
-        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-      with:
-        command: monitor
+      # 3. Build Docker & Trivy Scan
+      - name: Build Docker Image
+        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/devsecops-app:latest .
 
-    # 4. Build Docker Image và Push lên Hub
-    - name: Build and Push Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: true
-        tags: ${{ secrets.DOCKER_USERNAME }}/my-devsecops-app:latest
+      - name: Trivy Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ secrets.DOCKER_USERNAME }}/devsecops-app:latest'
+          format: 'table'
+          exit-code: '1' # Fail nếu lỗi Critical
+          severity: 'CRITICAL,HIGH'
 
-    # 5. Deploy lên AWS EC2 (Bước Ops)
-    - name: Deploy to EC2
-      uses: appleboy/ssh-action@v1.0.0
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ec2-user
-        key: ${{ secrets.EC2_KEY }}
-        script: |
-          # Dừng container cũ nếu đang chạy
-          sudo docker stop my-app || true
-          sudo docker rm my-app || true
-          
-          # Xóa image cũ để tiết kiệm dung lượng
-          sudo docker system prune -af
-          
-          # Kéo image mới nhất về
-          sudo docker pull ${{ secrets.DOCKER_USERNAME }}/my-devsecops-app:latest
-          
-          # Chạy container mới (Map port 80 của server vào 5000 của Flask)
-          sudo docker run -d --name my-app -p 80:5000 ${{ secrets.DOCKER_USERNAME }}/my-devsecops-app:latest
+      # 4. Push to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Push Image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/devsecops-app:latest
+
+  # --- GIAI ĐOẠN 4: DEPLOY & DAST ---
+  deploy-and-dast:
+    needs: build-and-scan # Chỉ chạy khi bước trên thành công
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Deploy lên EC2 qua SSH
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_KEY }}
+          script: |
+            docker pull ${{ secrets.DOCKER_USERNAME }}/devsecops-app:latest
+            docker stop my-app || true
+            docker rm my-app || true
+            # Chạy map port 80 của server vào 5000 của container
+            docker run -d --name my-app -p 80:5000 ${{ secrets.DOCKER_USERNAME }}/devsecops-app:latest
+
+      # 2. DAST Scan (OWASP ZAP) - Tấn công thử website vừa deploy
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.9.0
+        with:
+          target: 'http://${{ secrets.EC2_HOST }}/'
