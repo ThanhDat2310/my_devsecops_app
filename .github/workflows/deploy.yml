@@ -50,18 +50,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # 1. Deploy lên EC2 qua SSH
+
       - name: Deploy to EC2
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
+          username: ec2-user
           key: ${{ secrets.EC2_KEY }}
           script: |
-            docker pull ${{ secrets.DOCKER_USERNAME }}/devsecops-app:latest
-            docker stop my-app || true
-            docker rm my-app || true
-            # Chạy map port 80 của server vào 5000 của container
-            docker run -d --name my-app -p 80:5000 ${{ secrets.DOCKER_USERNAME }}/devsecops-app:latest
+            # === THÊM DÒNG NÀY ĐỂ ĐĂNG NHẬP ===
+            echo "${{ secrets.DOCKER_PASSWORD }}" | sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          
+            # Dừng container cũ
+            sudo docker stop my-app || true
+            sudo docker rm my-app || true
+          
+            # Xóa image cũ
+            sudo docker system prune -af
+          
+            # Tải image mới
+            sudo docker pull ${{ secrets.DOCKER_USERNAME }}/my-devsecops-app:latest
+          
+            # Chạy container
+            sudo docker run -d --name my-app -p 80:5000 ${{ secrets.DOCKER_USERNAME }}/my-devsecops-app:latest
 
       # 2. DAST Scan (OWASP ZAP) - Tấn công thử website vừa deploy
       - name: OWASP ZAP Baseline Scan
